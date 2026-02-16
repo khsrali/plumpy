@@ -481,6 +481,41 @@ class TestProcess(unittest.TestCase):
 
         self.assertEqual(proc.state, ProcessState.KILLED)
 
+    def test_kill_when_paused_in_step(self):
+        """Test that killing a process stuck on ``await self._paused`` in ``step()``
+        unblocks ``step_until_terminated``.
+
+        When a process in WAITING is paused and then resumed (from WAITING, not
+        unpaused), ``step()`` re-enters and blocks on ``await self._paused``.
+        Killing at this point must resolve the paused future via ``on_terminated``
+        and return early via the ``has_terminated()`` check, otherwise
+        ``step_until_terminated`` hangs forever.
+        """
+        loop = asyncio.get_event_loop()
+        proc = utils.WaitForSignalProcess()
+
+        async def async_test():
+            step_task = loop.create_task(proc.step_until_terminated())
+
+            await utils.run_until_waiting(proc)
+
+            # Pause, then resume from WAITING (not unpause).
+            # This triggers the next step() which blocks on await self._paused.
+            await proc.pause()
+            self.assertTrue(proc.paused)
+            proc.resume()
+            await asyncio.sleep(0.5)
+
+            # Kill while step() is stuck on await self._paused
+            proc.kill()
+
+            # Without the fix this times out
+            await asyncio.wait_for(step_task, timeout=5.0)
+
+        loop.run_until_complete(async_test())
+
+        self.assertEqual(proc.state, ProcessState.KILLED)
+
     def test_run_multiple(self):
         # Create and play some processes
         loop = asyncio.get_event_loop()
